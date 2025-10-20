@@ -2702,10 +2702,13 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
-        if let Poll::Ready(item) = this.stream1.as_mut().poll_next(cx) {
-            return Poll::Ready(item);
+        if let Poll::Ready(t) = this.stream1.as_mut().poll_next(cx) {
+            return Poll::Ready(t);
         }
-        this.stream2.as_mut().poll_next(cx)
+        if let Poll::Ready(Some(t)) = this.stream2.as_mut().poll_next(cx) {
+            return Poll::Ready(Some(t));
+        }
+        Poll::Pending
     }
 }
 
