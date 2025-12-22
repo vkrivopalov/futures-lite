@@ -1973,7 +1973,7 @@ pub trait StreamExt: Stream {
     ///
     /// ```
     /// use futures_lite::stream::{self, StreamExt};
-    /// use futures_lite::stream::{once, pending};
+    /// use futures_lite::stream::{empty, once, pending};
     ///
     /// # spin_on::spin_on(async {
     /// assert_eq!(once(1).race(pending()).next().await, Some(1));
@@ -1981,6 +1981,14 @@ pub trait StreamExt: Stream {
     ///
     /// // One of the two stream is randomly chosen as the winner.
     /// let res = once(1).race(once(2)).next().await;
+    ///
+    /// // If either stream is exhausted, the result of polling the other one is used:
+    /// assert_eq!(once(1).race(empty()).next().await, Some(1));
+    /// assert_eq!(empty().race(once(2)).next().await, Some(2));
+    ///
+    /// // If both underlying streams are exhausted, so is the combined stream:
+    /// assert_eq!(empty::<()>().race(empty()).next().await, None);
+    ///
     /// # })
     /// ```
     #[cfg(all(feature = "std", feature = "race"))]
@@ -1990,8 +1998,8 @@ pub trait StreamExt: Stream {
         S: Stream<Item = Self::Item>,
     {
         Race {
-            stream1: self,
-            stream2: other,
+            stream1: self.fuse(),
+            stream2: other.fuse(),
             rng: Rng::new(),
         }
     }
@@ -2714,7 +2722,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use futures_lite::stream::{self, once, pending, StreamExt};
+/// use futures_lite::stream::{self, empty, once, pending, StreamExt};
 ///
 /// # spin_on::spin_on(async {
 /// assert_eq!(stream::race(once(1), pending()).next().await, Some(1));
@@ -2722,6 +2730,13 @@ where
 ///
 /// // One of the two stream is randomly chosen as the winner.
 /// let res = stream::race(once(1), once(2)).next().await;
+///
+/// // If either stream is exhausted, the result of polling the other one is used:
+/// assert_eq!(once(1).race(empty()).next().await, Some(1));
+/// assert_eq!(empty().race(once(2)).next().await, Some(2));
+///
+/// // If both underlying streams are exhausted, so is the combined stream:
+/// assert_eq!(empty::<()>().race(empty()).next().await, None);
 /// # })
 /// ```
 #[cfg(all(feature = "std", feature = "race"))]
@@ -2731,8 +2746,8 @@ where
     S2: Stream<Item = T>,
 {
     Race {
-        stream1,
-        stream2,
+        stream1: stream1.fuse(),
+        stream2: stream2.fuse(),
         rng: Rng::new(),
     }
 }
@@ -2762,8 +2777,8 @@ where
     S2: Stream<Item = T>,
 {
     Race {
-        stream1,
-        stream2,
+        stream1: stream1.fuse(),
+        stream2: stream2.fuse(),
         rng: Rng::with_seed(seed),
     }
 }
@@ -2775,9 +2790,9 @@ pin_project! {
     #[must_use = "streams do nothing unless polled"]
     pub struct Race<S1, S2> {
         #[pin]
-        stream1: S1,
+        stream1: Fuse<S1>,
         #[pin]
-        stream2: S2,
+        stream2: Fuse<S2>,
         rng: Rng,
     }
 }
@@ -2794,21 +2809,20 @@ where
         let mut this = self.project();
 
         if this.rng.bool() {
-            if let Poll::Ready(Some(t)) = this.stream1.as_mut().poll_next(cx) {
-                return Poll::Ready(Some(t));
+            if !this.stream1.done {
+                if let Poll::Ready(Some(t)) = this.stream1.as_mut().poll_next(cx) {
+                    return Poll::Ready(Some(t));
+                }
             }
-            if let Poll::Ready(Some(t)) = this.stream2.as_mut().poll_next(cx) {
-                return Poll::Ready(Some(t));
-            }
+            this.stream2.as_mut().poll_next(cx)
         } else {
-            if let Poll::Ready(Some(t)) = this.stream2.as_mut().poll_next(cx) {
-                return Poll::Ready(Some(t));
+            if !this.stream2.done {
+                if let Poll::Ready(Some(t)) = this.stream2.as_mut().poll_next(cx) {
+                    return Poll::Ready(Some(t));
+                }
             }
-            if let Poll::Ready(Some(t)) = this.stream1.as_mut().poll_next(cx) {
-                return Poll::Ready(Some(t));
-            }
+            this.stream1.as_mut().poll_next(cx)
         }
-        Poll::Pending
     }
 }
 
